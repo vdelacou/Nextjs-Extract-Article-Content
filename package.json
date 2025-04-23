@@ -1,5 +1,5 @@
 {
-  "name": "extract-html",
+  "name": "nextjs-extract-article-content",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -9,17 +9,23 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@extractus/article-extractor": "^8.0.17",
+    "@sparticuz/chromium": "^133.0.0",
+    "next": "15.3.1",
+    "playwright": "^1.52.0",
+    "playwright-core": "^1.52.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "next": "15.3.1"
+    "sanitize-html": "^2.16.0"
   },
   "devDependencies": {
-    "typescript": "^5",
+    "@eslint/eslintrc": "^3",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/sanitize-html": "^2.15.0",
     "eslint": "^9",
     "eslint-config-next": "15.3.1",
-    "@eslint/eslintrc": "^3"
+    "typescript": "^5"
   }
 }

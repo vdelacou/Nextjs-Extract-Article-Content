@@ -1,0 +1,168 @@
+import type { NextApiRequest, NextApiResponse } from 'next'
+import { chromium, Page } from 'playwright-core'
+import chromiumBinary from '@sparticuz/chromium'
+import sanitize from 'sanitize-html'
+import { extractFromHtml } from '@extractus/article-extractor'
+
+type ScraperResponse = {
+  title?: string
+  description?: string
+  content?: string
+  images?: string[]
+  error?: string
+  details?: string
+}
+
+/**
+ * API handler for web scraping functionality
+ */
+export default async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse<ScraperResponse>
+) {
+  // Validate API key
+  if (!validateApiKey(req)) {
+    return res.status(401).json({ error: 'Invalid or missing API key' })
+  }
+
+  // Validate URL parameter
+  const url = getUrlParam(req)
+  if (!url) {
+    return res.status(400).json({ error: 'Missing "url" query parameter' })
+  }
+
+  try {
+    const { content, title, description, images } = await scrapeWebsite(url)
+    
+    return res.status(200).json({ 
+      title, 
+      description, 
+      content, 
+      images 
+    })
+  } catch (error) {
+    console.error('❌ Scrape error:', error)
+    return res.status(500).json({ 
+      error: 'Failed to scrape', 
+      details: error instanceof Error ? error.message : String(error) 
+    })
+  }
+}
+
+/**
+ * Validates if the API key in the request is valid
+ */
+function validateApiKey(req: NextApiRequest): boolean {
+  const apiKey = req.headers['x-api-key'] || req.query.key
+  const validKey = process.env.SCRAPE_API_KEY
+  
+  if (!validKey) {
+    console.error('Missing SCRAPE_API_KEY env var')
+    throw new Error('Server misconfiguration')
+  }
+  
+  return apiKey === validKey
+}
+
+/**
+ * Extracts and validates the URL parameter from the request
+ */
+function getUrlParam(req: NextApiRequest): string {
+  const urlParam = req.query.url
+  return typeof urlParam === 'string' ? urlParam : ''
+}
+
+/**
+ * Scrapes a website and extracts relevant content
+ */
+async function scrapeWebsite(url: string) {
+  // Launch browser
+  const browser = await launchBrowser()
+  
+  try {
+    const page = await browser.newPage()
+    page.setDefaultNavigationTimeout(60000)
+    page.setDefaultTimeout(60000)
+
+    // Navigate to target URL
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 })
+
+    // Get full page HTML for extraction
+    const html = await page.content()
+
+    // Extract structured content
+    const extractResult = await extractFromHtml(html, url)
+    if (!extractResult?.content) {
+      throw new Error('Failed to extract content')
+    }
+
+    const rawHtml = extractResult.content
+    
+    // Extract image URLs from content
+    const imageUrls = await extractImageUrls(rawHtml, page)
+    
+    // Sanitize the content
+    const cleanContent = sanitize(rawHtml, {
+      allowedTags: [],
+      allowedAttributes: {},
+    }).trim()
+
+    return {
+      title: extractResult.title,
+      description: extractResult.description,
+      content: cleanContent,
+      images: imageUrls
+    }
+  } finally {
+    await browser.close()
+  }
+}
+
+/**
+ * Launches a serverless-friendly Chromium browser
+ */
+async function launchBrowser() {
+  const execPath = await chromiumBinary.executablePath()
+  return chromium.launch({
+    args: chromiumBinary.args,
+    executablePath: execPath,
+    headless: true,
+    timeout: 60000,
+  })
+}
+
+/**
+ * Extracts image URLs from HTML content
+ */
+async function extractImageUrls(rawHtml: string, page: Page): Promise<string[]> {
+  const regex = /<img[^>]*src=['"]([^'"]+\.(?:jpe?g|png))['"][^>]*>/gi
+  const found: string[] = []
+  let match: RegExpExecArray | null
+  
+  while ((match = regex.exec(rawHtml))) {
+    found.push(match[1])
+  }
+  
+  // Remove duplicates
+  const imageUrls = Array.from(new Set(found))
+
+  // Fallback to og:image if no images found
+  if (imageUrls.length === 0) {
+    try {
+      const ogImage = await page.$eval(
+        'meta[property="og:image"]',
+        (el: HTMLMetaElement) => el.content
+      )
+      
+      if (ogImage && /\.(jpe?g|png)$/i.test(ogImage)) {
+        imageUrls.push(ogImage)
+      }
+    } catch (error) {
+      // No og:image available, continue without it
+      console.debug('No og:image found:', error instanceof Error ? error.message : String(error))
+      return [];
+    }
+  }
+  
+  return imageUrls
+}
