@@ -4,6 +4,25 @@ import chromiumBinary from '@sparticuz/chromium'
 import sanitize from 'sanitize-html'
 import { extractFromHtml } from '@extractus/article-extractor'
 
+// Cache implementation
+interface CacheEntry {
+  data: ScraperResponse
+  timestamp: number
+}
+
+const CACHE_TTL = 1000 * 60 * 60 // 1 hour in milliseconds
+const cache = new Map<string, CacheEntry>()
+
+// Clean up expired cache entries periodically
+setInterval(() => {
+  const now = Date.now()
+  for (const [key, entry] of cache.entries()) {
+    if (now - entry.timestamp > CACHE_TTL) {
+      cache.delete(key)
+    }
+  }
+}, 1000 * 60 * 5) // Clean up every 5 minutes
+
 type ScraperResponse = {
   title?: string
   description?: string
@@ -31,15 +50,22 @@ export default async function handler(
     return res.status(400).json({ error: 'Missing "url" query parameter' })
   }
 
+  // Check cache first
+  const cachedResult = cache.get(url)
+  if (cachedResult && Date.now() - cachedResult.timestamp < CACHE_TTL) {
+    return res.status(200).json(cachedResult.data)
+  }
+
   try {
-    const { content, title, description, images } = await scrapeWebsite(url)
+    const result = await scrapeWebsite(url)
     
-    return res.status(200).json({ 
-      title, 
-      description, 
-      content, 
-      images 
+    // Store in cache
+    cache.set(url, {
+      data: result,
+      timestamp: Date.now()
     })
+    
+    return res.status(200).json(result)
   } catch (error) {
     console.error('❌ Scrape error:', error)
     return res.status(500).json({ 
