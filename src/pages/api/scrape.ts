@@ -81,11 +81,18 @@ async function scrapeWebsite(url: string) {
   
   try {
     const page = await browser.newPage()
-    page.setDefaultNavigationTimeout(60000)
-    page.setDefaultTimeout(60000)
+    // Reduce timeouts to 30 seconds
+    page.setDefaultNavigationTimeout(30000)
+    page.setDefaultTimeout(30000)
 
-    // Navigate to target URL
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 })
+    // Navigate to target URL with more lenient wait conditions
+    await page.goto(url, { 
+      waitUntil: 'domcontentloaded', // Changed from networkidle to domcontentloaded
+      timeout: 30000 
+    })
+
+    // Add a small delay to allow for dynamic content
+    await page.waitForTimeout(2000)
 
     // Get full page HTML for extraction
     const html = await page.content()
@@ -113,6 +120,9 @@ async function scrapeWebsite(url: string) {
       content: cleanContent,
       images: imageUrls
     }
+  } catch (error) {
+    console.error('Scraping error:', error)
+    throw new Error(`Failed to scrape ${url}: ${error instanceof Error ? error.message : String(error)}`)
   } finally {
     await browser.close()
   }
