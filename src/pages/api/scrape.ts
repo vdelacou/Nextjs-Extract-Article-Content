@@ -176,7 +176,9 @@ async function extractImageUrls(rawHtml: string, page: Page): Promise<string[]> 
   let match: RegExpExecArray | null
   
   while ((match = regex.exec(rawHtml))) {
-    found.push(match[1])
+    // Clean the URL by removing query parameters
+    const cleanUrl = match[1].split('?')[0]
+    found.push(cleanUrl)
   }
   
   // Remove duplicates
@@ -190,8 +192,11 @@ async function extractImageUrls(rawHtml: string, page: Page): Promise<string[]> 
         (el: HTMLMetaElement) => el.content
       )
       
-      if (ogImage && /\.(jpe?g|png)$/i.test(ogImage)) {
-        imageUrls.push(ogImage)
+      // Modified regex to match image extensions before any query parameters
+      if (ogImage && /\.(jpe?g|png)(?:\?|$)/i.test(ogImage)) {
+        // Clean og:image URL as well
+        const cleanOgImage = ogImage.split('?')[0]
+        imageUrls.push(cleanOgImage)
       }
     } catch (error) {
       // No og:image available, continue without it
