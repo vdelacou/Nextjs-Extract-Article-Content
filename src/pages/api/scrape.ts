@@ -266,12 +266,12 @@ async function extractImageUrls(page: Page, baseUrl: string): Promise<string[]> 
         isInMainContent,
         isInSidebar
       }
-    }).filter((x: any) => !!x.url)
+    }).filter((x: { url: string }) => !!x.url)
   })
 
   // Normalize URLs
   const normalized = candidates
-    .map((c: any) => {
+    .map((c: { url: string; wAttr?: number; hAttr?: number; domIndex: number; isInMainContent: boolean; isInSidebar: boolean }) => {
       try {
         const abs = new URL(c.url, baseUrl).toString()
         if (!allowedExt.test(abs) || junkRe.test(abs)) return null
@@ -300,8 +300,8 @@ async function extractImageUrls(page: Page, baseUrl: string): Promise<string[]> 
         img.src = u
       })
 
-    const results = await Promise.all(items.map((i: any) => loadOne(i.url)))
-    return results.map((r: any, idx: number) => {
+    const results = await Promise.all(items.map((i: { url: string; wAttr?: number; hAttr?: number; domIndex: number; isInMainContent: boolean; isInSidebar: boolean }) => loadOne(i.url)))
+    return results.map((r: { url: string; w: number; h: number }, idx: number) => {
       const w = r.w || items[idx].wAttr || 0
       const h = r.h || items[idx].hAttr || 0
       return { 
@@ -317,12 +317,12 @@ async function extractImageUrls(page: Page, baseUrl: string): Promise<string[]> 
   }, normalized)
 
   // Filter by size
-  let finalList = sized.filter((s: any) => 
+  const finalList = sized.filter((s: { w: number; h: number; area: number }) => 
     s.w >= minWidth && s.h >= minHeight && s.area >= minArea
   )
 
   // Sort with priority: main content first, then by area, then by DOM order
-  finalList.sort((a: any, b: any) => {
+  finalList.sort((a: { isInMainContent: boolean; isInSidebar: boolean; area: number; domIndex: number }, b: { isInMainContent: boolean; isInSidebar: boolean; area: number; domIndex: number }) => {
     // Prioritize main content over sidebar
     if (a.isInMainContent && !b.isInMainContent) return -1
     if (!a.isInMainContent && b.isInMainContent) return 1
@@ -338,5 +338,5 @@ async function extractImageUrls(page: Page, baseUrl: string): Promise<string[]> 
     return a.domIndex - b.domIndex
   })
 
-  return finalList.map((x: any) => x.url)
+  return finalList.map((x: { url: string }) => x.url)
 }
