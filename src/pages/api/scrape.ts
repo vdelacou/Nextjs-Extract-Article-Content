@@ -169,9 +169,11 @@ async function scrapeWebsite(url: string): Promise<ScraperResponse> {
     await autoScroll(page)
     await sleep(800)
 
-    // Get HTML and extract content
-    const html = await page.content()
-    const article = await extractFromHtml(html, url)
+    // Get HTML and sanitize it
+    const rawHtml = await page.content()
+    
+    // Extract content from sanitized HTML
+    const article = await extractFromHtml(rawHtml, url)
     
     // Extract images
     const images = await extractImageUrls(page, url)
@@ -179,9 +181,9 @@ async function scrapeWebsite(url: string): Promise<ScraperResponse> {
     await browser.close()
 
     return {
-      title: article?.title || undefined,
-      description: article?.description || undefined,
-      content: article?.content ? sanitize(article.content, { allowedTags: [], allowedAttributes: {}}).trim() : undefined,
+      title: article?.title ? sanitize(article.title, { allowedTags: [], allowedAttributes: {} }).trim() : undefined,
+      description: article?.description ? sanitize(article.description, { allowedTags: [], allowedAttributes: {} }).trim() : undefined,
+      content: article?.content ? sanitize(article.content,{allowedTags: [], allowedAttributes: {}}).trim() : undefined,
       images
     }
   } catch (err) {
@@ -218,28 +220,58 @@ async function autoScroll(page: Page) {
  *  Image Extraction
  *  -------------------------- */
 async function extractImageUrls(page: Page, baseUrl: string): Promise<string[]> {
-  const minWidth = 320
-  const minHeight = 180
+  const minWidth = 600
+  const minHeight = 600
   const minArea = 100_000
 
-  // Collect image candidates
-  const candidates = await page.$$eval('img', (imgs) => {
-    return imgs.map((img) => {
-      const src = img.getAttribute('data-src') ||
-                  img.getAttribute('data-lazy-src') ||
-                  img.getAttribute('src') || ''
-      const wAttr = parseInt(img.getAttribute('width') || '', 10) || undefined
-      const hAttr = parseInt(img.getAttribute('height') || '', 10) || undefined
-      return { url: src, wAttr, hAttr }
-    }).filter((x) => !!x.url)
+  // First, try to get og:image as it's usually the main article image
+  const ogImage = await page.evaluate(() => {
+    const meta = document.querySelector<HTMLMetaElement>(
+      'meta[property="og:image:secure_url"], meta[property="og:image"]'
+    )
+    return meta?.content || ''
   })
 
   const junkRe = /(sprite|icon|favicon|logo|avatar|emoji|placeholder|spacer|1x1|pixel)/i
   const allowedExt = /\.(jpe?g|png|gif|webp)(?:[?#].*)?$/i
 
+  // If og:image exists and is valid, prioritize it
+  if (ogImage) {
+    try {
+      const abs = new URL(ogImage, baseUrl).toString()
+      if (allowedExt.test(abs) && !junkRe.test(abs)) {
+        return [abs]
+      }
+    } catch {}
+  }
+
+  // Collect image candidates with context priority
+  const candidates = await page.$$eval('img', (imgs) => {
+    return imgs.map((img: HTMLImageElement, index: number) => {
+      const src = img.getAttribute('data-src') ||
+                  img.getAttribute('data-lazy-src') ||
+                  img.getAttribute('src') || ''
+      const wAttr = parseInt(img.getAttribute('width') || '', 10) || undefined
+      const hAttr = parseInt(img.getAttribute('height') || '', 10) || undefined
+      
+      // Check if image is in main content area (article, main, or has high priority classes)
+      const isInMainContent = img.closest('article, main, .article, .post-content, .entry-content') !== null
+      const isInSidebar = img.closest('aside, .sidebar, .widget, .featured') !== null
+      
+      return { 
+        url: src, 
+        wAttr, 
+        hAttr, 
+        domIndex: index,
+        isInMainContent,
+        isInSidebar
+      }
+    }).filter((x: any) => !!x.url)
+  })
+
   // Normalize URLs
   const normalized = candidates
-    .map((c) => {
+    .map((c: any) => {
       try {
         const abs = new URL(c.url, baseUrl).toString()
         if (!allowedExt.test(abs) || junkRe.test(abs)) return null
@@ -268,39 +300,43 @@ async function extractImageUrls(page: Page, baseUrl: string): Promise<string[]> 
         img.src = u
       })
 
-    const results = await Promise.all(items.map((i) => loadOne(i.url)))
-    return results.map((r, idx) => {
+    const results = await Promise.all(items.map((i: any) => loadOne(i.url)))
+    return results.map((r: any, idx: number) => {
       const w = r.w || items[idx].wAttr || 0
       const h = r.h || items[idx].hAttr || 0
-      return { url: r.url, w, h, area: w * h }
+      return { 
+        url: r.url, 
+        w, 
+        h, 
+        area: w * h,
+        domIndex: items[idx].domIndex,
+        isInMainContent: items[idx].isInMainContent,
+        isInSidebar: items[idx].isInSidebar
+      }
     })
   }, normalized)
 
   // Filter by size
-  let finalList = sized.filter((s) => 
+  let finalList = sized.filter((s: any) => 
     s.w >= minWidth && s.h >= minHeight && s.area >= minArea
   )
 
-  // Fallback to OG image if no images found
-  if (finalList.length === 0) {
-    const ogImage = await page.evaluate(() => {
-      const meta = document.querySelector<HTMLMetaElement>(
-        'meta[property="og:image:secure_url"], meta[property="og:image"]'
-      )
-      return meta?.content || ''
-    })
+  // Sort with priority: main content first, then by area, then by DOM order
+  finalList.sort((a: any, b: any) => {
+    // Prioritize main content over sidebar
+    if (a.isInMainContent && !b.isInMainContent) return -1
+    if (!a.isInMainContent && b.isInMainContent) return 1
+    
+    // Deprioritize sidebar images
+    if (a.isInSidebar && !b.isInSidebar) return 1
+    if (!a.isInSidebar && b.isInSidebar) return -1
+    
+    // Then by area (larger first)
+    if (Math.abs(b.area - a.area) > 10000) return b.area - a.area
+    
+    // Finally by DOM order (earlier first)
+    return a.domIndex - b.domIndex
+  })
 
-    if (ogImage) {
-      try {
-        const abs = new URL(ogImage, baseUrl).toString()
-        if (allowedExt.test(abs) && !junkRe.test(abs)) {
-          finalList = [{ url: abs, w: 0, h: 0, area: 0 }]
-        }
-      } catch {}
-    }
-  }
-
-  // Sort by area and return URLs
-  finalList.sort((a, b) => b.area - a.area)
-  return finalList.map((x) => x.url)
+  return finalList.map((x: any) => x.url)
 }
