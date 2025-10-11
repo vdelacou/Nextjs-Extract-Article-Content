@@ -10,15 +10,8 @@ import { Browser, Page } from 'puppeteer-core'
  *  -------------------------- */
 const CACHE_TTL = 1000 * 60 * 60 // 1 hour
 const cache = new Map<string, { data: ScraperResponse; timestamp: number }>()
-const MAX_RETRIES = 3
-
-// Periodic cache cleanup
-setInterval(() => {
-  const now = Date.now()
-  for (const [key, entry] of cache.entries()) {
-    if (now - entry.timestamp > CACHE_TTL) cache.delete(key)
-  }
-}, 1000 * 60 * 5)
+const MAX_RETRIES = 2 // Reduced retries for faster failure
+const REQUEST_TIMEOUT = 8000 // 8 seconds to stay under Vercel's 10s limit
 
 /** --------------------------
  *  Types
@@ -39,6 +32,8 @@ export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse<ScraperResponse>
 ) {
+  const startTime = Date.now()
+  
   try {
     // API key validation
     if (!validateApiKey(req)) {
@@ -50,38 +45,59 @@ export default async function handler(
       return res.status(400).json({ error: 'Missing "url" query parameter' })
     }
 
+    // Clean expired cache entries on-demand (serverless-friendly)
+    cleanExpiredCache()
+
     // Cache lookup
     const cached = cache.get(url)
     if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+      console.log(`Cache hit for ${url}`)
       return res.status(200).json(cached.data)
     }
 
-    // Retry loop with exponential backoff
+    // Retry loop with shorter backoff
     let lastErr: unknown = null
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
         const result = await scrapeWebsite(url)
         cache.set(url, { data: result, timestamp: Date.now() })
+        
+        const duration = Date.now() - startTime
+        console.log(`✓ Scraped ${url} in ${duration}ms`)
+        
         return res.status(200).json(result)
       } catch (err) {
         lastErr = err
         const msg = err instanceof Error ? err.message : String(err)
         
-        // Exponential backoff
+        // Shorter backoff for serverless
         if (attempt < MAX_RETRIES) {
-          const backoff = 500 * Math.pow(2, attempt - 1)
-          console.warn(`Scrape attempt ${attempt} failed. Retrying after ${backoff}ms — reason: ${msg}`)
+          const backoff = 300 * Math.pow(2, attempt - 1)
+          console.warn(`Attempt ${attempt}/${MAX_RETRIES} failed (${backoff}ms backoff): ${msg}`)
           await new Promise((r) => setTimeout(r, backoff))
         }
       }
     }
 
+    const duration = Date.now() - startTime
     const msg = lastErr instanceof Error ? lastErr.message : String(lastErr)
+    console.error(`✗ Failed to scrape ${url} after ${duration}ms`)
     return res.status(500).json({ error: 'Failed to scrape', details: msg })
   } catch (err) {
+    const duration = Date.now() - startTime
     const msg = err instanceof Error ? err.message : String(err)
-    console.error('Unexpected handler error:', err)
+    console.error(`Unexpected handler error after ${duration}ms:`, err)
     return res.status(500).json({ error: 'Internal error', details: msg })
+  }
+}
+
+/** Clean expired cache entries (serverless-friendly) */
+function cleanExpiredCache() {
+  const now = Date.now()
+  for (const [key, entry] of cache.entries()) {
+    if (now - entry.timestamp > CACHE_TTL) {
+      cache.delete(key)
+    }
   }
 }
 
@@ -116,10 +132,15 @@ async function launchBrowser(): Promise<Browser> {
     
     return await puppeteerCore.default.launch({
       executablePath,
-      args: chromiumBinary.args,
+      args: [
+        ...chromiumBinary.args,
+        '--disable-dev-shm-usage', // Prevents memory issues
+        '--disable-gpu',
+        '--single-process' // Faster startup for serverless
+      ],
       headless: chromiumBinary.headless,
       defaultViewport: { width: 1200, height: 900 },
-      timeout: 60000
+      timeout: 15000 // Reduced from 60s
     })
   } else {
     // Local: Use regular puppeteer with bundled Chromium
@@ -129,7 +150,7 @@ async function launchBrowser(): Promise<Browser> {
       headless: true,
       args: ['--no-sandbox', '--disable-setuid-sandbox'],
       defaultViewport: { width: 1200, height: 900 },
-      timeout: 60000
+      timeout: 15000 // Reduced from 60s
     })
   }
 }
@@ -138,9 +159,17 @@ async function launchBrowser(): Promise<Browser> {
  *  Main Scraping Function
  *  -------------------------- */
 async function scrapeWebsite(url: string): Promise<ScraperResponse> {
+  const stepTimes: Record<string, number> = {}
+  const logStep = (name: string, start: number) => {
+    stepTimes[name] = Date.now() - start
+  }
+
+  let startStep = Date.now()
   const browser = await launchBrowser()
+  logStep('browser_launch', startStep)
 
   try {
+    startStep = Date.now()
     const page: Page = await browser.newPage()
 
     // Set realistic headers
@@ -152,33 +181,37 @@ async function scrapeWebsite(url: string): Promise<ScraperResponse> {
       'accept-language': 'en-US,en;q=0.9'
     })
 
-    page.setDefaultNavigationTimeout(60000)
-    page.setDefaultTimeout(60000)
+    // Aggressive timeouts for serverless
+    page.setDefaultNavigationTimeout(REQUEST_TIMEOUT)
+    page.setDefaultTimeout(REQUEST_TIMEOUT)
 
-    // Navigate to page
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 })
-      .catch(async () => {
-        // Fallback to domcontentloaded if networkidle2 fails
-        return await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 })
-      })
+    // Use domcontentloaded for faster page loads (networkidle2 is too slow)
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: REQUEST_TIMEOUT })
+    logStep('page_load', startStep)
 
-    // Wait for content to load
-    await sleep(1500)
+    // Minimal wait for dynamic content (reduced from 1500ms)
+    startStep = Date.now()
+    await sleep(500)
 
-    // Scroll to trigger lazy-loaded content
+    // Quick scroll to trigger lazy-loaded content
     await autoScroll(page)
-    await sleep(800)
+    await sleep(300) // Reduced from 800ms
+    logStep('scroll_and_wait', startStep)
 
-    // Get HTML and sanitize it
+    // Get HTML and extract content
+    startStep = Date.now()
     const rawHtml = await page.content()
-    
-    // Extract content from sanitized HTML
     const article = await extractFromHtml(rawHtml, url)
+    logStep('extract_article', startStep)
     
-    // Extract images
+    // Extract images with timeout
+    startStep = Date.now()
     const images = await extractImageUrls(page, url)
+    logStep('extract_images', startStep)
 
     await browser.close()
+
+    console.log(`Performance breakdown: ${JSON.stringify(stepTimes)}`)
 
     return {
       title: article?.title ? sanitize(article.title, { allowedTags: [], allowedAttributes: {} }).trim() : undefined,
@@ -203,7 +236,7 @@ async function autoScroll(page: Page) {
   await page.evaluate(async () => {
     await new Promise<void>((resolve) => {
       let total = 0
-      const distance = 200
+      const distance = 300 // Increased distance per scroll
       const timer = setInterval(() => {
         window.scrollBy(0, distance)
         total += distance
@@ -211,7 +244,7 @@ async function autoScroll(page: Page) {
           clearInterval(timer)
           resolve()
         }
-      }, 200)
+      }, 100) // Faster interval (was 200ms)
     })
   })
 }
@@ -282,7 +315,7 @@ async function extractImageUrls(page: Page, baseUrl: string): Promise<string[]> 
     })
     .filter(Boolean) as typeof candidates
 
-  // Measure image sizes
+  // Measure image sizes (with aggressive timeout for serverless)
   const sized = await page.evaluate(async (items: typeof candidates) => {
     const loadOne = (u: string): Promise<{ url: string; w: number; h: number }> =>
       new Promise((resolve) => {
@@ -296,7 +329,7 @@ async function extractImageUrls(page: Page, baseUrl: string): Promise<string[]> 
         }
         img.onload = () => finish(img.naturalWidth || 0, img.naturalHeight || 0)
         img.onerror = () => finish(0, 0)
-        setTimeout(() => finish(0, 0), 2500)
+        setTimeout(() => finish(0, 0), 1000) // Reduced from 2500ms
         img.src = u
       })
 
