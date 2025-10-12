@@ -11,7 +11,8 @@ import { Browser, Page } from 'puppeteer-core'
 const CACHE_TTL = 1000 * 60 * 60 // 1 hour
 const cache = new Map<string, { data: ScraperResponse; timestamp: number }>()
 const MAX_RETRIES = 2 // Reduced retries for faster failure
-const REQUEST_TIMEOUT = 8000 // 8 seconds to stay under Vercel's 10s limit
+const REQUEST_TIMEOUT = 7000 // 7 seconds to stay under timeout
+const IS_VERCEL = !!process.env.VERCEL
 
 /** --------------------------
  *  Types
@@ -161,16 +162,33 @@ async function launchBrowser(): Promise<Browser> {
 async function scrapeWebsite(url: string): Promise<ScraperResponse> {
   const stepTimes: Record<string, number> = {}
   const logStep = (name: string, start: number) => {
-    stepTimes[name] = Date.now() - start
+    const duration = Date.now() - start
+    stepTimes[name] = duration
+    if (IS_VERCEL) {
+      console.log(`[${name}] ${duration}ms`)
+    }
   }
 
   let startStep = Date.now()
+  console.log(`Starting scrape for: ${url}`)
   const browser = await launchBrowser()
   logStep('browser_launch', startStep)
 
   try {
     startStep = Date.now()
     const page: Page = await browser.newPage()
+
+    // Block unnecessary resources to speed up page load
+    await page.setRequestInterception(true)
+    page.on('request', (req) => {
+      const resourceType = req.resourceType()
+      // Block heavy resources that aren't needed for content extraction
+      if (['font', 'media', 'stylesheet'].includes(resourceType)) {
+        req.abort()
+      } else {
+        req.continue()
+      }
+    })
 
     // Set realistic headers
     const userAgent = process.env.SCRAPE_USER_AGENT || 
@@ -189,13 +207,13 @@ async function scrapeWebsite(url: string): Promise<ScraperResponse> {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: REQUEST_TIMEOUT })
     logStep('page_load', startStep)
 
-    // Minimal wait for dynamic content (reduced from 1500ms)
+    // Minimal wait for dynamic content
     startStep = Date.now()
-    await sleep(500)
+    await sleep(300) // Further reduced
 
     // Quick scroll to trigger lazy-loaded content
     await autoScroll(page)
-    await sleep(300) // Reduced from 800ms
+    await sleep(200) // Further reduced
     logStep('scroll_and_wait', startStep)
 
     // Get HTML and extract content
@@ -302,8 +320,9 @@ async function extractImageUrls(page: Page, baseUrl: string): Promise<string[]> 
     }).filter((x: { url: string }) => !!x.url)
   })
 
-  // Normalize URLs
+  // Normalize URLs and limit candidates for speed
   const normalized = candidates
+    .slice(0, 20) // Limit to first 20 images for faster processing
     .map((c: { url: string; wAttr?: number; hAttr?: number; domIndex: number; isInMainContent: boolean; isInSidebar: boolean }) => {
       try {
         const abs = new URL(c.url, baseUrl).toString()
@@ -329,7 +348,7 @@ async function extractImageUrls(page: Page, baseUrl: string): Promise<string[]> 
         }
         img.onload = () => finish(img.naturalWidth || 0, img.naturalHeight || 0)
         img.onerror = () => finish(0, 0)
-        setTimeout(() => finish(0, 0), 1000) // Reduced from 2500ms
+        setTimeout(() => finish(0, 0), 500) // Aggressive timeout for serverless
         img.src = u
       })
 
