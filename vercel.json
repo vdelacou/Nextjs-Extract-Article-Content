@@ -1,9 +1,0 @@
-{
-  "functions": {
-    "src/pages/api/scrape.ts": {
-      "maxDuration": 60,
-      "memory": 3008
-    }
-  }
-}
-

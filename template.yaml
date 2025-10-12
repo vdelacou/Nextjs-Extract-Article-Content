@@ -1,0 +1,85 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Simple Lambda Web Scraper (Zip-based deployment, no Docker)
+
+Globals:
+  Function:
+    Timeout: 300 # 5 minutes
+    MemorySize: 3008 # 3GB for Chromium
+    Runtime: nodejs20.x
+    Architectures:
+      - x86_64
+    Environment:
+      Variables:
+        NODE_ENV: production
+
+Parameters:
+  ScrapeApiKey:
+    Type: String
+    Description: API key for scraping endpoint
+    NoEcho: true
+
+Resources:
+  # HTTP API Gateway
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins:
+          - '*'
+        AllowHeaders:
+          - Content-Type
+          - X-Api-Key
+        AllowMethods:
+          - GET
+          - POST
+
+  # Lambda Function
+  ScraperFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: extract-html-scraper
+      CodeUri: lambda/
+      Handler: index.handler
+      Description: Web scraper with Puppeteer and article extraction
+      Environment:
+        Variables:
+          SCRAPE_API_KEY: !Ref ScrapeApiKey
+      Events:
+        ApiEvent:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /scrape
+            Method: GET
+    Metadata:
+      BuildMethod: nodejs20.x
+
+  # CloudWatch Log Group
+  ScraperLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ScraperFunction}'
+      RetentionInDays: 7
+
+Outputs:
+  ApiUrl:
+    Description: API Gateway endpoint URL
+    Value: !Sub 'https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com'
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiUrl'
+  
+  ApiEndpoint:
+    Description: Full endpoint to call
+    Value: !Sub 'https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/scrape?url=YOUR_URL'
+  
+  FunctionArn:
+    Description: Lambda Function ARN
+    Value: !GetAtt ScraperFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-FunctionArn'
+  
+  FunctionName:
+    Description: Lambda Function Name
+    Value: !Ref ScraperFunction
+

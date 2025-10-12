@@ -1,33 +1,27 @@
 {
-  "name": "nextjs-extract-article-content",
-  "version": "0.1.0",
-  "private": true,
+  "name": "lambda-extract-article-content",
+  "version": "1.0.0",
+  "description": "AWS Lambda function for web scraping and article content extraction",
+  "main": "lambda/index.js",
   "scripts": {
-    "dev": "next dev --turbopack",
-    "build": "next build",
-    "start": "next start",
-    "lint": "next lint"
+    "deploy": "./deploy.sh",
+    "logs": "sam logs --stack-name extract-html-scraper --tail",
+    "remove": "sam delete --stack-name extract-html-scraper --no-prompts",
+    "test": "node test-local.js"
   },
+  "keywords": [
+    "lambda",
+    "scraper",
+    "puppeteer",
+    "article-extraction"
+  ],
+  "author": "",
+  "license": "MIT",
   "dependencies": {
     "@extractus/article-extractor": "^8.0.20",
     "@sparticuz/chromium": "^133.0.0",
-    "next": "15.3.1",
-    "playwright": "^1.55.1",
-    "playwright-core": "^1.55.1",
-    "puppeteer": "^24.23.0",
+    "dotenv": "^17.2.3",
     "puppeteer-core": "^24.23.0",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0",
     "sanitize-html": "^2.17.0"
-  },
-  "devDependencies": {
-    "@eslint/eslintrc": "^3.3.1",
-    "@types/node": "^20.19.19",
-    "@types/react": "^19.2.0",
-    "@types/react-dom": "^19.2.0",
-    "@types/sanitize-html": "^2.16.0",
-    "eslint": "^9.37.0",
-    "eslint-config-next": "15.3.1",
-    "typescript": "^5.9.3"
   }
 }
