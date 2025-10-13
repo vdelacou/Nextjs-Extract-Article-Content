@@ -55,11 +55,11 @@ echo "Installing dependencies..."
 cd lambda
 npm init -y 2>/dev/null || true
 npm install --save \
-  @extractus/article-extractor@^8.0.20 \
-  @sparticuz/chromium@^133.0.0 \
-  puppeteer-core@^24.23.0 \
-  undici@^6.19.8 \
-  sanitize-html@^2.17.0
+  @extractus/article-extractor@8.0.20 \
+  @sparticuz/chromium@141.0.0 \
+  puppeteer-core@24.24.0 \
+  sanitize-html@2.17.0 \
+  undici@7.16.0
 cd ..
 echo -e "${GREEN}✓ Dependencies installed${NC}"
 

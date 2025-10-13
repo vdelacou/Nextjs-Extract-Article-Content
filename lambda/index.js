@@ -8,7 +8,6 @@ exports.handler = async (event, context) => {
   // Return immediately once we resolve; don't wait for the event loop to drain
   context.callbackWaitsForEmptyEventLoop = false;
 
-  // Basic CORS (add OPTIONS support if behind API Gateway HTTP API)
   const baseHeaders = {
     'Content-Type': 'application/json; charset=utf-8',
     'Access-Control-Allow-Origin': '*',
@@ -16,7 +15,7 @@ exports.handler = async (event, context) => {
     'Access-Control-Allow-Methods': 'GET,OPTIONS'
   };
 
-  // Preflight
+  // Preflight for API Gateway (REST or HTTP API)
   if (event.requestContext?.http?.method === 'OPTIONS' || event.httpMethod === 'OPTIONS') {
     return { statusCode: 204, headers: baseHeaders, body: '' };
   }
@@ -31,12 +30,10 @@ exports.handler = async (event, context) => {
       event.queryStringParameters?.key;
 
     const validKey = process.env.SCRAPE_API_KEY;
-
     if (!validKey) {
       console.error('SCRAPE_API_KEY environment variable not set');
       return { statusCode: 500, headers: baseHeaders, body: JSON.stringify({ error: 'Server misconfiguration' }) };
     }
-
     if (!apiKey || apiKey !== validKey) {
       return { statusCode: 401, headers: baseHeaders, body: JSON.stringify({ error: 'Invalid or missing API key' }) };
     }
@@ -53,10 +50,10 @@ exports.handler = async (event, context) => {
     console.info(`Starting scrape for: ${url}`);
 
     // --- Soft-timeout: always end BEFORE Lambda would
-    // Use remaining time – 3s safety margin; cap to 70s to be safe.
     const remaining = typeof context.getRemainingTimeInMillis === 'function'
       ? context.getRemainingTimeInMillis()
       : 90000;
+    // 3s safety margin, max 70s cap
     const SOFT_TIMEOUT_MS = Math.max(1000, Math.min(70000, remaining - 3000));
 
     const watchdog = new Promise((_, reject) =>
@@ -65,15 +62,27 @@ exports.handler = async (event, context) => {
 
     const start = Date.now();
 
-    // IMPORTANT: call the function you actually export: scrapeSmart
-    const result = await Promise.race([
-      scraper.scrapeSmart(url),
-      watchdog
-    ]);
+    // Call the orchestrator
+    const result = await Promise.race([scraper.scrapeSmart(url), watchdog]);
 
     const duration = Date.now() - start;
     console.info(`✓ Scraped in ${duration}ms`);
 
+    // If site protection blocked us, return structured 451
+    if (result && result.blocked) {
+      return {
+        statusCode: 451,
+        headers: baseHeaders,
+        body: JSON.stringify({
+          error: 'Blocked by site protection',
+          provider: result.provider,
+          domain: result.domain,
+          metadata: { url, scrapedAt: new Date().toISOString(), durationMs: duration }
+        })
+      };
+    }
+
+    // Success
     return {
       statusCode: 200,
       headers: baseHeaders,
@@ -82,6 +91,7 @@ exports.handler = async (event, context) => {
         metadata: { url, scrapedAt: new Date().toISOString(), durationMs: duration }
       })
     };
+
   } catch (error) {
     console.error('Error processing request:', error);
     const statusCode = error.message === 'Scrape timeout' ? 504 : 500;
