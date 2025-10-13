@@ -16,5 +16,6 @@
     "puppeteer-core": "24.24.0",
     "sanitize-html": "2.17.0",
     "undici": "7.16.0"
-  }
+  },
+  "devDependencies": {}
 }
