@@ -1,0 +1,37 @@
+swagger: '2.0'
+info:
+  title: Extract HTML Scraper API
+  description: Web scraping service with API key authentication
+  version: 1.0.0
+schemes:
+  - https
+produces:
+  - application/json
+securityDefinitions:
+  api_key:
+    type: apiKey
+    name: key
+    in: query
+security:
+  - api_key: []
+paths:
+  /:
+    get:
+      summary: Scrape a URL
+      operationId: scrapeUrl
+      parameters:
+        - name: url
+          in: query
+          required: true
+          type: string
+          description: The URL to scrape
+      responses:
+        200:
+          description: Successful scrape
+        400:
+          description: Invalid URL
+        500:
+          description: Server error
+      x-google-backend:
+        address: https://extract-html-scraper-3kwncvw2kq-uc.a.run.app
+        protocol: h2

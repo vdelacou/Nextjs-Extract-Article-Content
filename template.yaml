@@ -1,17 +1,18 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Simple Lambda Web Scraper (Zip-based deployment, no Docker)
+Description: Go Lambda Web Scraper (Container-based deployment) - v2.0
 
 Globals:
   Function:
-    Timeout: 300 # 5 minutes
-    MemorySize: 3008 # 3GB for Chromium
-    Runtime: nodejs20.x
+    Timeout: 90 # Reduced from 300s - Go is much faster
+    MemorySize: 2048 # Reduced from 3008MB - Go uses less memory
     Architectures:
       - x86_64
     Environment:
       Variables:
         NODE_ENV: production
+        CHROME_BIN: /usr/bin/google-chrome
+        CHROME_PATH: /usr/bin/google-chrome
 
 Parameters:
   ScrapeApiKey:
@@ -32,19 +33,27 @@ Resources:
           - X-Api-Key
         AllowMethods:
           - GET
-          - POST
+          - OPTIONS
+      DefaultRouteSettings:
+        ThrottlingRateLimit: 1000
+        ThrottlingBurstLimit: 2000
 
-  # Lambda Function
+  # Lambda Function (Container)
   ScraperFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: extract-html-scraper
-      CodeUri: lambda/
-      Handler: index.handler
-      Description: Web scraper with Puppeteer and article extraction
+      FunctionName: extract-html-scraper-go
+      PackageType: Image
+      ImageConfig:
+        Command: ["bootstrap"]
+      ImageUri: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/extract-html-scraper:latest"
+      Description: Go-based web scraper with chromedp and optimized performance
       Environment:
         Variables:
           SCRAPE_API_KEY: !Ref ScrapeApiKey
+          DEPLOYMENT_VERSION: "2.0"
+          CHROME_BIN: /usr/bin/google-chrome
+          CHROME_PATH: /usr/bin/google-chrome
       Events:
         ApiEvent:
           Type: HttpApi
@@ -53,7 +62,7 @@ Resources:
             Path: /scrape
             Method: GET
     Metadata:
-      BuildMethod: nodejs20.x
+      BuildMethod: container
 
   # CloudWatch Log Group
   ScraperLogGroup:
@@ -61,6 +70,39 @@ Resources:
     Properties:
       LogGroupName: !Sub '/aws/lambda/${ScraperFunction}'
       RetentionInDays: 7
+
+  # CloudWatch Alarms
+  ErrorRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${AWS::StackName}-ErrorRate'
+      AlarmDescription: 'High error rate in scraper function'
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ScraperFunction
+
+  DurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${AWS::StackName}-Duration'
+      AlarmDescription: 'High duration in scraper function'
+      MetricName: Duration
+      Namespace: AWS/Lambda
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 30000 # 30 seconds
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ScraperFunction
 
 Outputs:
   ApiUrl:
@@ -83,3 +125,14 @@ Outputs:
     Description: Lambda Function Name
     Value: !Ref ScraperFunction
 
+  RepositoryUri:
+    Description: ECR Repository URI
+    Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/extract-html-scraper"
+    Export:
+      Name: !Sub '${AWS::StackName}-RepositoryUri'
+
+  RepositoryName:
+    Description: ECR Repository Name
+    Value: extract-html-scraper
+    Export:
+      Name: !Sub '${AWS::StackName}-RepositoryName'
