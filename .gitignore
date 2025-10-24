@@ -18,6 +18,8 @@ cloudrun
 /cloudrun
 cmd/cloudrun/cloudrun
 cmd/*/cloudrun
+bootstrap
+/bootstrap
 bin/
 
 # Google Cloud
