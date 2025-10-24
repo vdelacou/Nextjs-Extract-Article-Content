@@ -1,16 +1,32 @@
 # Dependencies
-lambda/node_modules/
-lambda/package-lock.json
 node_modules/
 
-# AWS SAM
-.aws-sam/
+# Go
+vendor/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
+go.work.sum
 
-# Environment variables
+# Google Cloud
+.gcloud/
+
+# Environment variables and secrets
 .env
 .env.local
 .env.*.local
 *.env
+*.key
+*.pem
+*.secret
+*.credentials
+secrets/
+credentials/
 
 # Logs
 *.log

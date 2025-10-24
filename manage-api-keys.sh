@@ -1,6 +1,12 @@
 #!/bin/bash
 
-PROJECT_ID="panda-social-473507"
+# WARNING: Do not commit API keys or sensitive data to version control
+PROJECT_ID=${GOOGLE_CLOUD_PROJECT}
+if [ -z "$PROJECT_ID" ]; then
+    echo "❌ GOOGLE_CLOUD_PROJECT environment variable is required"
+    echo "Please set it with: export GOOGLE_CLOUD_PROJECT=your-project-id"
+    exit 1
+fi
 API_NAME="extract-html-scraper-api"
 
 case "$1" in

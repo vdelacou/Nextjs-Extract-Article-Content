@@ -1,10 +1,23 @@
+// Package models defines the data structures used for web scraping requests and responses.
+// It includes types for scrape requests, responses, errors, and metadata.
 package models
 
 import "time"
 
-// ScrapeRequest represents the incoming Lambda event
+// ScrapeRequest represents the incoming scrape request
 type ScrapeRequest struct {
 	URL string `json:"url"`
+}
+
+// Quality represents content quality metrics
+type Quality struct {
+	Score              int     `json:"score"`              // 0-100 confidence score
+	TextToHTMLRatio    float64 `json:"textToHtmlRatio"`    // Higher is better
+	ParagraphCount     int     `json:"paragraphCount"`     // Number of paragraphs
+	AvgParagraphLength int     `json:"avgParagraphLength"` // Average characters per paragraph
+	HasHeaders         bool    `json:"hasHeaders"`         // Contains headings
+	LinkDensity        float64 `json:"linkDensity"`        // Links per 1000 chars (lower is better)
+	WordCount          int     `json:"wordCount"`          // Estimated word count
 }
 
 // ScrapeResponse represents the successful scraping result
@@ -14,6 +27,13 @@ type ScrapeResponse struct {
 	Content     string   `json:"content,omitempty"`
 	Images      []string `json:"images"`
 	Metadata    Metadata `json:"metadata"`
+	Author      string   `json:"author,omitempty"`
+	PublishDate string   `json:"publishDate,omitempty"`
+	Excerpt     string   `json:"excerpt,omitempty"`
+	ReadingTime int      `json:"readingTime,omitempty"`
+	Language    string   `json:"language,omitempty"`
+	TextLength  int      `json:"textLength,omitempty"`
+	Quality     Quality  `json:"quality,omitempty"`
 }
 
 // BlockedResponse represents when scraping is blocked
@@ -47,25 +67,4 @@ type ImageCandidate struct {
 	Source    string
 	Score     float64
 	Area      int
-}
-
-// ImageConfig contains configuration for image extraction
-type ImageConfig struct {
-	MinShortSide   int
-	MinArea        int
-	MinAspect      float64
-	MaxAspect      float64
-	RatioWhitelist []float64
-	RatioTol       float64
-	AdSizes        map[string]bool
-	BadHintRegex   string
-}
-
-// ScrapeConfig contains general scraping configuration
-type ScrapeConfig struct {
-	UserAgent      string
-	TimeoutMs      int
-	SizeLimitBytes int
-	MaxRetries     int
-	ChromeMajor    int
 }

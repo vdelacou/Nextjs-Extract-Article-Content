@@ -1,3 +1,5 @@
+// Package config provides configuration structures and defaults for the web scraper.
+// It includes settings for image extraction, scraping behavior, and performance tuning.
 package config
 
 import (

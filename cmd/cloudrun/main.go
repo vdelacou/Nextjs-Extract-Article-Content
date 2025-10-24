@@ -1,3 +1,7 @@
+// Package main provides the Google Cloud Run HTTP handler for the web scraper service.
+// It handles incoming requests, performs web scraping operations,
+// and returns structured JSON responses with extracted article content.
+// Authentication is handled by API Gateway before requests reach this service.
 package main
 
 import (
@@ -31,7 +35,7 @@ func (h *CloudRunHandler) Handler(w http.ResponseWriter, r *http.Request) {
 	// Set up CORS headers
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type,X-Api-Key,x-api-key")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 	w.Header().Set("Access-Control-Allow-Methods", "GET,OPTIONS")
 
 	// Handle preflight OPTIONS request
@@ -96,7 +100,7 @@ func (h *CloudRunHandler) Handler(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("✓ Scraped in %dms\n", duration.Milliseconds())
 
 	// Handle Cloudflare blocking
-	if cfErr, ok := err.(*scraper.CloudflareBlockError); ok {
+	if cfErr, ok := err.(*models.CloudflareBlockError); ok {
 		blockedResponse := models.BlockedResponse{
 			Error:    "Blocked by site protection",
 			Provider: "cloudflare",
@@ -127,11 +131,9 @@ func (h *CloudRunHandler) Handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Add metadata to successful response
-	result.Metadata = models.Metadata{
-		URL:        targetURL,
-		ScrapedAt:  time.Now(),
-		DurationMs: duration.Milliseconds(),
-	}
+	result.Metadata.URL = targetURL
+	result.Metadata.ScrapedAt = time.Now()
+	result.Metadata.DurationMs = duration.Milliseconds()
 
 	// Return successful response
 	w.WriteHeader(http.StatusOK)

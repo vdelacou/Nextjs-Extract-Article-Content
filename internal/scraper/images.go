@@ -15,7 +15,7 @@ import (
 )
 
 type ImageExtractor struct {
-	config  models.ImageConfig
+	config  config.ImageConfig
 	regexes map[string]*regexp.Regexp
 }
 
@@ -24,16 +24,7 @@ func NewImageExtractor() *ImageExtractor {
 	regexes := config.CompileRegexes()
 
 	return &ImageExtractor{
-		config: models.ImageConfig{
-			MinShortSide:   cfg.MinShortSide,
-			MinArea:        cfg.MinArea,
-			MinAspect:      cfg.MinAspect,
-			MaxAspect:      cfg.MaxAspect,
-			RatioWhitelist: cfg.RatioWhitelist,
-			RatioTol:       cfg.RatioTol,
-			AdSizes:        cfg.AdSizes,
-			BadHintRegex:   cfg.BadHintRegex,
-		},
+		config:  cfg,
 		regexes: regexes,
 	}
 }
@@ -88,8 +79,8 @@ func (ie *ImageExtractor) ExtractImagesFromHTML(html, baseURL string) []string {
 	// Sort by score and area
 	ie.sortCandidates(filtered)
 
-	// Return top 3 unique URLs
-	return ie.getTopImages(filtered, 3)
+	// Return top images
+	return ie.getTopImages(filtered, DefaultImageLimit)
 }
 
 // extractOgImage extracts Open Graph image metadata
@@ -338,11 +329,11 @@ func (ie *ImageExtractor) pickFromSrcset(srcset string) string {
 		return ""
 	}
 
-	// Find closest to 1000px width, preferring larger images
+	// Find closest to TargetImageWidth, preferring larger images
 	best := candidates[0]
 	for _, candidate := range candidates[1:] {
-		candidateDiff := absInt(candidate.w - 1000)
-		bestDiff := absInt(best.w - 1000)
+		candidateDiff := absInt(candidate.w - TargetImageWidth)
+		bestDiff := absInt(best.w - TargetImageWidth)
 		if candidateDiff < bestDiff ||
 			(candidateDiff == bestDiff && candidate.w > best.w) {
 			best = candidate

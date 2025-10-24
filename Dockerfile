@@ -1,5 +1,4 @@
-# Multi-stage Dockerfile for Go Lambda with Chrome
-# Stage 1: Build Go binary
+# Google Cloud Run Dockerfile
 FROM golang:1.23-alpine AS builder
 
 # Install git and ca-certificates
@@ -17,35 +16,37 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-# Build the Go binary with size optimization for linux/amd64
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o main ./cmd/lambda
+# Build the Go binary with size optimization
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o main ./cmd/cloudrun
 
-# Stage 2: Use AWS Lambda base image
-FROM public.ecr.aws/lambda/provided:al2-x86_64
+# Stage 2: Runtime with Chrome
+FROM alpine:3.18
 
 # Install Chrome dependencies
-RUN yum update -y && \
-    yum install -y \
-    wget unzip \
-    nss atk at-spi2-atk cups-libs \
-    libdrm libXcomposite libXdamage libXrandr libgbm \
-    alsa-lib \
-    && yum clean all
-
-# Install Chrome
-RUN wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_x86_64.rpm \
-    && rpm -ivh --nodeps google-chrome-stable_current_x86_64.rpm \
-    && rm google-chrome-stable_current_x86_64.rpm
+RUN apk add --no-cache \
+    chromium \
+    nss \
+    freetype \
+    freetype-dev \
+    harfbuzz \
+    ca-certificates \
+    ttf-freefont \
+    wget \
+    unzip
 
 # Copy the Go binary from builder stage
-COPY --from=builder /app/main /var/runtime/bootstrap
+COPY --from=builder /app/main /app/main
 
 # Set permissions
-RUN chmod +x /var/runtime/bootstrap
+RUN chmod +x /app/main
 
 # Set Chrome environment variables
-ENV CHROME_BIN=/usr/bin/google-chrome-stable \
-    CHROME_PATH=/usr/bin/google-chrome-stable
+ENV CHROME_BIN=/usr/bin/chromium-browser \
+    CHROME_PATH=/usr/bin/chromium-browser \
+    PORT=8080
+
+# Expose port
+EXPOSE 8080
 
 # Set the CMD to your handler
-CMD ["bootstrap"]
+CMD ["/app/main"]

@@ -6,24 +6,31 @@ import (
 	"extract-html-scraper/internal/models"
 
 	"github.com/PuerkitoBio/goquery"
+	"github.com/go-shiori/go-readability"
 	"github.com/microcosm-cc/bluemonday"
 )
 
 type ArticleExtractor struct {
-	sanitizer *bluemonday.Policy
+	sanitizer     *bluemonday.Policy
+	htmlSanitizer *bluemonday.Policy
 }
 
 func NewArticleExtractor() *ArticleExtractor {
 	// Configure bluemonday for HTML sanitization
 	policy := bluemonday.StrictPolicy()
 
+	// Configure HTML sanitizer for preserving structure
+	htmlPolicy := bluemonday.UGCPolicy()
+	htmlPolicy.AllowElements("p", "br", "h1", "h2", "h3", "h4", "h5", "h6", "strong", "em", "blockquote", "ul", "ol", "li")
+
 	return &ArticleExtractor{
-		sanitizer: policy,
+		sanitizer:     policy,
+		htmlSanitizer: htmlPolicy,
 	}
 }
 
-// ExtractArticle extracts title, description, content, and images from HTML
-func (ae *ArticleExtractor) ExtractArticle(html, baseURL string) models.ScrapeResponse {
+// ExtractArticleWithOptions extracts content with configurable options
+func (ae *ArticleExtractor) ExtractArticleWithOptions(html, baseURL string, options ExtractionOptions) models.ScrapeResponse {
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
 	if err != nil {
 		return models.ScrapeResponse{
@@ -31,187 +38,92 @@ func (ae *ArticleExtractor) ExtractArticle(html, baseURL string) models.ScrapeRe
 		}
 	}
 
-	// Extract components concurrently would be ideal, but for simplicity we'll do sequentially
-	// since they're already quite fast with goquery
-
 	title := ae.extractTitle(doc)
 	description := ae.extractDescription(doc)
-	content := ae.extractContent(doc)
+
+	var content string
+	if options.PreserveHTML {
+		content = ae.extractContentAsHTML(doc)
+	} else {
+		content = ae.extractContent(doc)
+	}
 
 	// Extract images using the optimized image extractor
 	imageExtractor := NewImageExtractor()
 	images := imageExtractor.ExtractImagesFromHTML(html, baseURL)
 
-	return models.ScrapeResponse{
+	// Extract metadata if requested
+	var metadata models.ScrapeResponse
+	if options.IncludeMetadata {
+		metadata = ae.extractMetadataFromReadability(html)
+	}
+
+	// Calculate content quality metrics
+	quality := ScoreContentQuality(content, html)
+
+	response := models.ScrapeResponse{
 		Title:       title,
 		Description: description,
 		Content:     content,
 		Images:      images,
+		Quality: models.Quality{
+			Score:              quality.Score,
+			TextToHTMLRatio:    quality.TextToHTMLRatio,
+			ParagraphCount:     quality.ParagraphCount,
+			AvgParagraphLength: quality.AvgParagraphLength,
+			HasHeaders:         quality.HasHeaders,
+			LinkDensity:        quality.LinkDensity,
+			WordCount:          quality.WordCount,
+		},
 	}
+
+	// Add metadata fields if requested
+	if options.IncludeMetadata {
+		response.Author = metadata.Author
+		response.PublishDate = metadata.PublishDate
+		response.Excerpt = metadata.Excerpt
+		response.ReadingTime = metadata.ReadingTime
+		response.Language = metadata.Language
+		response.TextLength = metadata.TextLength
+	}
+
+	return response
 }
 
-// extractTitle extracts the page title with fallback strategies
-func (ae *ArticleExtractor) extractTitle(doc *goquery.Document) string {
-	var title string
-
-	// Try Open Graph title first
-	doc.Find("meta").Each(func(i int, s *goquery.Selection) {
-		if property, exists := s.Attr("property"); exists && property == "og:title" {
-			if content, exists := s.Attr("content"); exists {
-				title = strings.TrimSpace(content)
-			}
-		}
-	})
-
-	// Try Twitter card title
-	if title == "" {
-		doc.Find("meta").Each(func(i int, s *goquery.Selection) {
-			if name, exists := s.Attr("name"); exists && name == "twitter:title" {
-				if content, exists := s.Attr("content"); exists {
-					title = strings.TrimSpace(content)
-				}
-			}
-		})
-	}
-
-	// Try h1 tag
-	if title == "" {
-		doc.Find("h1").First().Each(func(i int, s *goquery.Selection) {
-			title = strings.TrimSpace(s.Text())
-		})
-	}
-
-	// Try title tag as last resort
-	if title == "" {
-		doc.Find("title").Each(func(i int, s *goquery.Selection) {
-			title = strings.TrimSpace(s.Text())
-		})
-	}
-
-	return ae.sanitizeText(title)
+// ExtractArticle extracts title, description, content, and images from HTML (backward compatibility)
+func (ae *ArticleExtractor) ExtractArticle(html, baseURL string) models.ScrapeResponse {
+	return ae.ExtractArticleWithOptions(html, baseURL, DefaultExtractionOptions())
 }
 
-// extractDescription extracts the page description with fallback strategies
-func (ae *ArticleExtractor) extractDescription(doc *goquery.Document) string {
-	var description string
-
-	// Try Open Graph description first
-	doc.Find("meta").Each(func(i int, s *goquery.Selection) {
-		if property, exists := s.Attr("property"); exists && property == "og:description" {
-			if content, exists := s.Attr("content"); exists {
-				description = strings.TrimSpace(content)
-			}
+// extractContentAsHTML extracts content preserving HTML structure
+func (ae *ArticleExtractor) extractContentAsHTML(doc *goquery.Document) string {
+	// First, try to use readability algorithm for better content extraction
+	html, err := doc.Html()
+	if err == nil {
+		// Parse with readability, passing URL for better context
+		article, err := readability.FromReader(strings.NewReader(html), nil)
+		if err == nil && article.Content != "" {
+			// Sanitize HTML content while preserving structure
+			return ae.htmlSanitizer.Sanitize(article.Content)
 		}
-	})
-
-	// Try Twitter card description
-	if description == "" {
-		doc.Find("meta").Each(func(i int, s *goquery.Selection) {
-			if name, exists := s.Attr("name"); exists && name == "twitter:description" {
-				if content, exists := s.Attr("content"); exists {
-					description = strings.TrimSpace(content)
-				}
-			}
-		})
 	}
 
-	// Try meta description
-	if description == "" {
-		doc.Find("meta").Each(func(i int, s *goquery.Selection) {
-			if name, exists := s.Attr("name"); exists && name == "description" {
-				if content, exists := s.Attr("content"); exists {
-					description = strings.TrimSpace(content)
-				}
-			}
-		})
-	}
-
-	// Try to extract from first paragraph
-	if description == "" {
-		doc.Find("p").First().Each(func(i int, s *goquery.Selection) {
-			text := strings.TrimSpace(s.Text())
-			if len(text) > 50 && len(text) < 300 {
-				description = text
-			}
-		})
-	}
-
-	return ae.sanitizeText(description)
+	// Fallback to original selector-based approach if readability fails
+	return ae.extractContentFallbackAsHTML(doc)
 }
 
-// extractContent extracts the main article content
-func (ae *ArticleExtractor) extractContent(doc *goquery.Document) string {
-	var content strings.Builder
+// extractContentFallbackAsHTML provides HTML-based content extraction fallback
+func (ae *ArticleExtractor) extractContentFallbackAsHTML(doc *goquery.Document) string {
+	// Find the main content container
+	contentElement := FindContentContainer(doc)
 
-	// Try to find article or main content
-	contentSelectors := []string{
-		"article",
-		"main",
-		"[role='main']",
-		".content",
-		".post-content",
-		".entry-content",
-		".article-content",
-		".story-content",
+	// Get HTML content and sanitize it
+	htmlContent, err := contentElement.Html()
+	if err != nil {
+		return ""
 	}
 
-	var contentElement *goquery.Selection
-	for _, selector := range contentSelectors {
-		if doc.Find(selector).Length() > 0 {
-			contentElement = doc.Find(selector).First()
-			break
-		}
-	}
-
-	// If no specific content container found, try body
-	if contentElement == nil {
-		contentElement = doc.Find("body")
-	}
-
-	// Extract text content, preserving some structure
-	contentElement.Find("p, h1, h2, h3, h4, h5, h6, li, blockquote").Each(func(i int, s *goquery.Selection) {
-		text := strings.TrimSpace(s.Text())
-		if text != "" {
-			// Add some basic structure
-			tagName := goquery.NodeName(s)
-			switch tagName {
-			case "h1", "h2", "h3", "h4", "h5", "h6":
-				if content.Len() > 0 {
-					content.WriteString("\n\n")
-				}
-				content.WriteString(text)
-				content.WriteString("\n")
-			case "p", "li", "blockquote":
-				if content.Len() > 0 {
-					content.WriteString("\n")
-				}
-				content.WriteString(text)
-			}
-		}
-	})
-
-	// If no structured content found, extract all text
-	if content.Len() == 0 {
-		contentElement.Find("*").Each(func(i int, s *goquery.Selection) {
-			// Skip script, style, and other non-content elements
-			tagName := goquery.NodeName(s)
-			if tagName == "script" || tagName == "style" || tagName == "nav" || tagName == "header" || tagName == "footer" {
-				s.Remove()
-				return
-			}
-		})
-
-		text := strings.TrimSpace(contentElement.Text())
-		content.WriteString(text)
-	}
-
-	result := content.String()
-
-	// Clean up whitespace
-	result = strings.ReplaceAll(result, "\n\n\n", "\n\n")
-	result = strings.TrimSpace(result)
-
-	return ae.sanitizeText(result)
+	return ae.htmlSanitizer.Sanitize(htmlContent)
 }
 
 // sanitizeText sanitizes text content
@@ -223,14 +135,150 @@ func (ae *ArticleExtractor) sanitizeText(text string) string {
 	// Use bluemonday to sanitize HTML if present
 	sanitized := ae.sanitizer.Sanitize(text)
 
-	// Additional cleanup
-	sanitized = strings.TrimSpace(sanitized)
+	// Additional cleanup using our helper
+	return CleanWhitespace(sanitized)
+}
 
-	// Remove excessive whitespace
-	sanitized = strings.ReplaceAll(sanitized, "  ", " ")
-	sanitized = strings.ReplaceAll(sanitized, "\n\n\n", "\n\n")
+// extractTitle extracts the page title with fallback strategies
+func (ae *ArticleExtractor) extractTitle(doc *goquery.Document) string {
+	// Try Open Graph title first
+	if title := FindMetaTag(doc, OGTitle, ""); title != "" {
+		return ae.sanitizeText(title)
+	}
 
-	return sanitized
+	// Try Twitter card title
+	if title := FindMetaTag(doc, "", TwitterTitle); title != "" {
+		return ae.sanitizeText(title)
+	}
+
+	// Try h1 tag
+	var title string
+	doc.Find("h1").First().Each(func(i int, s *goquery.Selection) {
+		title = strings.TrimSpace(s.Text())
+	})
+	if title != "" {
+		return ae.sanitizeText(title)
+	}
+
+	// Try title tag as last resort
+	doc.Find("title").Each(func(i int, s *goquery.Selection) {
+		title = strings.TrimSpace(s.Text())
+	})
+
+	return ae.sanitizeText(title)
+}
+
+// extractDescription extracts the page description with fallback strategies
+func (ae *ArticleExtractor) extractDescription(doc *goquery.Document) string {
+	// Try Open Graph description first
+	if desc := FindMetaTag(doc, OGDescription, ""); desc != "" {
+		return ae.sanitizeText(desc)
+	}
+
+	// Try Twitter card description
+	if desc := FindMetaTag(doc, "", TwitterDesc); desc != "" {
+		return ae.sanitizeText(desc)
+	}
+
+	// Try meta description
+	if desc := FindMetaTag(doc, "", MetaDesc); desc != "" {
+		return ae.sanitizeText(desc)
+	}
+
+	// Try to extract from first paragraph
+	if desc := ExtractDescriptionFromParagraph(doc); desc != "" {
+		return ae.sanitizeText(desc)
+	}
+
+	return ""
+}
+
+// extractContent extracts the main article content using readability algorithm
+func (ae *ArticleExtractor) extractContent(doc *goquery.Document) string {
+	// First, try to use readability algorithm for better content extraction
+	html, err := doc.Html()
+	if err == nil {
+		// Parse with readability, passing URL for better context
+		article, err := readability.FromReader(strings.NewReader(html), nil)
+		if err == nil && article.Content != "" {
+			// Convert readability's HTML content to structured text
+			return ae.convertHTMLToStructuredText(article.Content)
+		}
+	}
+
+	// Fallback to original selector-based approach if readability fails
+	return ae.extractContentFallback(doc)
+}
+
+// convertHTMLToStructuredText converts HTML content to structured text
+func (ae *ArticleExtractor) convertHTMLToStructuredText(htmlContent string) string {
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlContent))
+	if err != nil {
+		return ae.sanitizeText(htmlContent)
+	}
+
+	// Extract structured text
+	content := ExtractTextFromElements(doc.Selection, TextElements)
+
+	// If no structured content found, extract all text
+	if content == "" {
+		content = ExtractFallbackText(doc.Selection)
+	}
+
+	// Clean up whitespace and remove noise
+	content = CleanTextContent(content)
+	return ae.sanitizeText(content)
+}
+
+// extractContentFallback provides the original selector-based content extraction
+func (ae *ArticleExtractor) extractContentFallback(doc *goquery.Document) string {
+	// Find the main content container
+	contentElement := FindContentContainer(doc)
+
+	// Extract structured text from the container
+	content := ExtractTextFromElements(contentElement, TextElements)
+
+	// If no structured content found, extract all text
+	if content == "" {
+		content = ExtractFallbackText(contentElement)
+	}
+
+	// Clean up whitespace and remove noise
+	content = CleanTextContent(content)
+	return ae.sanitizeText(content)
+}
+
+// extractMetadataFromReadability extracts additional metadata using readability
+func (ae *ArticleExtractor) extractMetadataFromReadability(html string) models.ScrapeResponse {
+	article, err := readability.FromReader(strings.NewReader(html), nil)
+	if err != nil {
+		return models.ScrapeResponse{}
+	}
+
+	// Calculate reading time (average 200 words per minute, but we'll use character count)
+	readingTime := 0
+	if article.Length > 0 {
+		// Estimate reading time based on character count (roughly 5 chars per word, 200 words per minute)
+		readingTime = int(article.Length / 1000) // characters / 1000 chars per minute
+		if readingTime < 1 {
+			readingTime = 1
+		}
+	}
+
+	// Convert publish date to string
+	publishDate := ""
+	if article.PublishedTime != nil {
+		publishDate = article.PublishedTime.Format("2006-01-02T15:04:05Z")
+	}
+
+	return models.ScrapeResponse{
+		Author:      article.Byline,
+		PublishDate: publishDate,
+		Excerpt:     article.Excerpt,
+		ReadingTime: readingTime,
+		Language:    article.Language,
+		TextLength:  article.Length,
+	}
 }
 
 // ExtractArticleSimple is a simpler version for basic content extraction

@@ -1,149 +1,121 @@
+# Google Cloud Run deployment script
 #!/bin/bash
 
-# Go Lambda Container Deployment Script
-# Deploys Go-based Lambda function with Docker container to ECR
-
-set -e
-
-echo "🚀 Go Lambda Container Deployment"
-echo "================================="
-
-# Colors
+# Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m'
+NC='\033[0m' # No Color
 
-STACK_NAME="extract-html-scraper-go"
-REGION="${AWS_REGION:-us-east-1}"
-REPOSITORY_NAME="extract-html-scraper"
+echo -e "${BLUE}🚀 Google Cloud Run Deployment${NC}"
+echo "================================="
 
-# Check prerequisites
-if ! command -v aws &> /dev/null; then
-    echo -e "${RED}❌ AWS CLI not installed${NC}"
-    echo "Install: brew install awscli"
+# Configuration
+# WARNING: Do not commit API keys or sensitive data to version control
+PROJECT_ID=${GOOGLE_CLOUD_PROJECT}
+if [ -z "$PROJECT_ID" ]; then
+    echo -e "${RED}❌ GOOGLE_CLOUD_PROJECT environment variable is required${NC}"
+    echo "Please set it with: export GOOGLE_CLOUD_PROJECT=your-project-id"
+    exit 1
+fi
+SERVICE_NAME="extract-html-scraper"
+REGION=${GOOGLE_CLOUD_REGION:-"us-central1"}
+IMAGE_NAME="gcr.io/$PROJECT_ID/$SERVICE_NAME"
+
+# Check if gcloud is installed
+if ! command -v gcloud &> /dev/null; then
+    echo -e "${RED}❌ gcloud CLI not found. Please install it first:${NC}"
+    echo "https://cloud.google.com/sdk/docs/install"
     exit 1
 fi
 
-if ! command -v sam &> /dev/null; then
-    echo -e "${RED}❌ AWS SAM CLI not installed${NC}"
-    echo "Install: brew install aws-sam-cli"
+# Check if user is authenticated
+if ! gcloud auth list --filter=status:ACTIVE --format="value(account)" | grep -q .; then
+    echo -e "${RED}❌ Not authenticated with gcloud. Please run:${NC}"
+    echo "gcloud auth login"
     exit 1
 fi
 
-if ! command -v docker &> /dev/null; then
-    echo -e "${RED}❌ Docker not installed${NC}"
-    echo "Install: https://docs.docker.com/get-docker/"
-    exit 1
-fi
+# Set project
+echo -e "${BLUE}Setting project to: $PROJECT_ID${NC}"
+gcloud config set project $PROJECT_ID
 
-# Check AWS credentials
-if ! aws sts get-caller-identity &> /dev/null; then
-    echo -e "${RED}❌ AWS credentials not configured${NC}"
-    echo "Run: aws configure"
-    exit 1
-fi
+# Enable required APIs
+echo -e "${BLUE}Enabling required APIs...${NC}"
+gcloud services enable cloudbuild.googleapis.com
+gcloud services enable run.googleapis.com
+gcloud services enable containerregistry.googleapis.com
 
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-echo -e "${GREEN}✓ AWS Account: $ACCOUNT_ID${NC}"
-echo -e "${GREEN}✓ Region: $REGION${NC}"
-
-# Get API key
-if [ -z "$SCRAPE_API_KEY" ]; then
-    echo ""
-    echo -e "${YELLOW}Enter your SCRAPE_API_KEY:${NC}"
-    read -rs SCRAPE_API_KEY
-    export SCRAPE_API_KEY
-fi
-
-# Initialize Go module if needed
-if [ ! -f "go.mod" ]; then
-    echo ""
-    echo -e "${BLUE}Initializing Go module...${NC}"
-    go mod init extract-html-scraper
-fi
-
-# Download Go dependencies
-echo ""
-echo -e "${BLUE}Downloading Go dependencies...${NC}"
-go mod tidy
-echo -e "${GREEN}✓ Dependencies downloaded${NC}"
-
-# Build Go binary locally first (for testing)
-echo ""
-echo -e "${BLUE}Building Go binary locally...${NC}"
-CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o bootstrap ./cmd/lambda
-echo -e "${GREEN}✓ Go binary built${NC}"
-
-# Create ECR repository if it doesn't exist
-echo ""
-echo -e "${BLUE}Setting up ECR repository...${NC}"
-aws ecr describe-repositories --repository-names $REPOSITORY_NAME --region $REGION &> /dev/null || {
-    echo -e "${YELLOW}Creating ECR repository...${NC}"
-    aws ecr create-repository --repository-name $REPOSITORY_NAME --region $REGION
-    echo -e "${GREEN}✓ ECR repository created${NC}"
-}
-
-# Get ECR login token
-echo -e "${BLUE}Logging into ECR...${NC}"
-aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com
-echo -e "${GREEN}✓ ECR login successful${NC}"
-
-# Build Docker image for single platform (Lambda requirement)
-echo ""
+# Build and push Docker image
 echo -e "${BLUE}Building Docker image...${NC}"
-IMAGE_TAG="$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/$REPOSITORY_NAME:latest"
-docker build --platform linux/amd64 -t $IMAGE_TAG .
-echo -e "${GREEN}✓ Docker image built${NC}"
+gcloud builds submit --config cloudbuild.yaml --substitutions=_PROJECT_ID=$PROJECT_ID .
 
-# Push image to ECR
-echo ""
-echo -e "${BLUE}Pushing image to ECR...${NC}"
-docker push $IMAGE_TAG
-echo -e "${GREEN}✓ Image pushed to ECR${NC}"
+# Deploy to Cloud Run
+echo -e "${BLUE}Deploying to Cloud Run...${NC}"
+gcloud run deploy $SERVICE_NAME \
+    --image $IMAGE_NAME \
+    --platform managed \
+    --region $REGION \
+    --allow-unauthenticated \
+    --memory 2Gi \
+    --cpu 2 \
+    --timeout 300 \
+    --concurrency 10 \
+    --max-instances 100 \
 
-# Deploy with SAM
-echo ""
-echo -e "${BLUE}Deploying with SAM...${NC}"
-sam deploy \
-  --template-file template.yaml \
-  --stack-name "$STACK_NAME" \
-  --region "$REGION" \
-  --capabilities CAPABILITY_IAM \
-  --parameter-overrides ScrapeApiKey="$SCRAPE_API_KEY" \
-  --image-repository "$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/$REPOSITORY_NAME" \
-  --no-confirm-changeset \
-  --no-fail-on-empty-changeset
+# Get service URL
+SERVICE_URL=$(gcloud run services describe $SERVICE_NAME --region=$REGION --format="value(status.url)")
 
-# Get API URL
-API_URL=$(aws cloudformation describe-stacks \
-  --stack-name "$STACK_NAME" \
-  --region "$REGION" \
-  --query 'Stacks[0].Outputs[?OutputKey==`ApiUrl`].OutputValue' \
-  --output text)
+# Create service account for API Gateway
+echo -e "${BLUE}Creating service account for API Gateway...${NC}"
+gcloud iam service-accounts create cr-gw-invoker \
+    --display-name="Cloud Run Gateway Invoker" \
+    --project=$PROJECT_ID || echo "Service account already exists"
 
-echo ""
-echo -e "${GREEN}================================${NC}"
-echo -e "${GREEN}✅ Deployment successful!${NC}"
-echo -e "${GREEN}================================${NC}"
-echo ""
-echo -e "${BLUE}Stack Name:${NC} $STACK_NAME"
-echo -e "${BLUE}API Endpoint:${NC} ${API_URL}/scrape"
-echo -e "${BLUE}ECR Repository:${NC} $IMAGE_TAG"
-echo ""
-echo -e "${YELLOW}Test with:${NC}"
-echo -e "${YELLOW}curl \"${API_URL}/scrape?url=https://example.com\" \\${NC}"
-echo -e "${YELLOW}  -H \"x-api-key: YOUR_API_KEY\"${NC}"
-echo ""
-echo -e "${YELLOW}View logs:${NC}"
-echo -e "${YELLOW}sam logs --stack-name $STACK_NAME --tail${NC}"
-echo ""
-echo -e "${YELLOW}Update image:${NC}"
-echo -e "${YELLOW}docker build -t $IMAGE_TAG . && docker push $IMAGE_TAG${NC}"
-echo -e "${YELLOW}aws lambda update-function-code --function-name extract-html-scraper-go --image-uri $IMAGE_TAG${NC}"
-echo ""
+# Grant service account permission to invoke Cloud Run
+echo -e "${BLUE}Granting Cloud Run invoker role to service account...${NC}"
+gcloud run services add-iam-policy-binding $SERVICE_NAME \
+    --region=$REGION \
+    --member="serviceAccount:cr-gw-invoker@$PROJECT_ID.iam.gserviceaccount.com" \
+    --role="roles/run.invoker"
 
-# Clean up local binary
-rm -f bootstrap
-echo -e "${GREEN}✓ Cleanup completed${NC}"
+# Enable API Gateway API
+echo -e "${BLUE}Enabling API Gateway API...${NC}"
+gcloud services enable apigateway.googleapis.com
+gcloud services enable servicemanagement.googleapis.com
+gcloud services enable servicecontrol.googleapis.com
+
+# Create API Gateway config
+echo -e "${BLUE}Creating API Gateway configuration...${NC}"
+# Substitute the Cloud Run service URL in the API Gateway config
+sed "s/\${CLOUD_RUN_SERVICE_URL}/$SERVICE_URL/g" api-gateway-config.yaml > api-gateway-config-temp.yaml
+gcloud api-gateway api-configs create scraper-config-v1 \
+    --api=extract-html-scraper-api \
+    --openapi-spec=api-gateway-config-temp.yaml \
+    --backend-auth-service-account=cr-gw-invoker@$PROJECT_ID.iam.gserviceaccount.com \
+    --project=$PROJECT_ID || echo "Config already exists, creating new version..."
+rm -f api-gateway-config-temp.yaml
+
+# Create or update API
+echo -e "${BLUE}Creating API...${NC}"
+gcloud api-gateway apis create extract-html-scraper-api \
+    --project=$PROJECT_ID || echo "API already exists"
+
+# Deploy gateway
+echo -e "${BLUE}Deploying API Gateway...${NC}"
+gcloud api-gateway gateways create extract-html-scraper-gateway \
+    --api=extract-html-scraper-api \
+    --api-config=scraper-config-v1 \
+    --location=$REGION \
+    --project=$PROJECT_ID || echo "Gateway exists, updating..."
+
+# Get gateway URL
+GATEWAY_URL=$(gcloud api-gateway gateways describe extract-html-scraper-gateway \
+    --location=$REGION \
+    --project=$PROJECT_ID \
+    --format="value(defaultHostname)")
+
+echo -e "${GREEN}✅ API Gateway deployed!${NC}"
+echo -e "${GREEN}Gateway URL: https://$GATEWAY_URL${NC}"
+echo -e "${BLUE}Test the service:${NC}"
+echo "curl \"https://$GATEWAY_URL?url=https://example.com&key=YOUR_API_KEY\""

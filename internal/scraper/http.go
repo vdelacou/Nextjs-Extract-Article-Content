@@ -12,14 +12,13 @@ import (
 	"time"
 
 	"extract-html-scraper/internal/config"
-	"extract-html-scraper/internal/models"
 
 	"golang.org/x/sync/errgroup"
 )
 
 type HTTPClient struct {
 	client  *http.Client
-	config  models.ScrapeConfig
+	config  config.ScrapeConfig
 	regexes map[string]*regexp.Regexp
 }
 
@@ -39,8 +38,8 @@ func NewHTTPClient() *HTTPClient {
 		Transport: transport,
 		Timeout:   time.Duration(cfg.TimeoutMs) * time.Millisecond,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			// Allow up to 5 redirects
-			if len(via) >= 5 {
+			// Allow up to MaxRedirects redirects
+			if len(via) >= MaxRedirects {
 				return fmt.Errorf("too many redirects")
 			}
 			return nil
@@ -48,16 +47,35 @@ func NewHTTPClient() *HTTPClient {
 	}
 
 	return &HTTPClient{
-		client: client,
-		config: models.ScrapeConfig{
-			UserAgent:      cfg.UserAgent,
-			TimeoutMs:      cfg.TimeoutMs,
-			SizeLimitBytes: cfg.SizeLimitBytes,
-			MaxRetries:     cfg.MaxRetries,
-			ChromeMajor:    cfg.ChromeMajor,
-		},
+		client:  client,
+		config:  cfg,
 		regexes: regexes,
 	}
+}
+
+// setRequestHeaders sets browser-like headers on the request
+func (h *HTTPClient) setRequestHeaders(req *http.Request) {
+	req.Header.Set("User-Agent", h.config.UserAgent)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	req.Header.Set("Cache-Control", "no-cache")
+	req.Header.Set("Upgrade-Insecure-Requests", "1")
+	req.Header.Set("Referer", "https://www.google.com/")
+}
+
+// retryWithBackoff implements exponential backoff for retries
+func (h *HTTPClient) retryWithBackoff(ctx context.Context, targetURL string, retryCount int) (string, error) {
+	if retryCount >= h.config.MaxRetries {
+		return "", fmt.Errorf("max retries exceeded")
+	}
+
+	delay := time.Duration(1000*(1<<retryCount)) * time.Millisecond
+	if delay > 5*time.Second {
+		delay = 5 * time.Second
+	}
+
+	time.Sleep(delay)
+	return h.FetchHTML(ctx, targetURL, retryCount+1)
 }
 
 // FetchHTML fetches HTML content from a URL with retry logic
@@ -68,12 +86,7 @@ func (h *HTTPClient) FetchHTML(ctx context.Context, targetURL string, retryCount
 	}
 
 	// Set headers to mimic a real browser
-	req.Header.Set("User-Agent", h.config.UserAgent)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-	req.Header.Set("Cache-Control", "no-cache")
-	req.Header.Set("Upgrade-Insecure-Requests", "1")
-	req.Header.Set("Referer", "https://www.google.com/")
+	h.setRequestHeaders(req)
 
 	resp, err := h.client.Do(req)
 	if err != nil {
@@ -83,16 +96,7 @@ func (h *HTTPClient) FetchHTML(ctx context.Context, targetURL string, retryCount
 
 	// Handle 5xx server errors with retry logic
 	if resp.StatusCode >= 500 {
-		if retryCount < h.config.MaxRetries {
-			delay := time.Duration(1000*(1<<retryCount)) * time.Millisecond
-			if delay > 5*time.Second {
-				delay = 5 * time.Second
-			}
-
-			time.Sleep(delay)
-			return h.FetchHTML(ctx, targetURL, retryCount+1)
-		}
-		return "", fmt.Errorf("HTTP %d (after %d retries)", resp.StatusCode, h.config.MaxRetries)
+		return h.retryWithBackoff(ctx, targetURL, retryCount)
 	}
 
 	if resp.StatusCode >= 400 {
@@ -117,8 +121,7 @@ func (h *HTTPClient) FetchHTML(ctx context.Context, targetURL string, retryCount
 
 // LooksLikeCFBlock checks if HTML content indicates Cloudflare blocking
 func (h *HTTPClient) LooksLikeCFBlock(html string) bool {
-	htmlLower := strings.ToLower(html)
-	return h.regexes["cfBlock"].MatchString(htmlLower)
+	return IsCloudflareBlock(fmt.Errorf(html))
 }
 
 // GenerateAlternateURLs creates alternative URLs for AMP/mobile fallback
